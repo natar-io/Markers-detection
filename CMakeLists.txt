@@ -16,6 +16,7 @@ endif()
 
 find_package(redisimagehelper)
 find_package(hiredis)
+find_package(RapidJSON)
 
 set(SINGLE_MARKER_SOURCES
     src/singlemarker.cpp)
@@ -29,7 +30,7 @@ set(MULTI_MARKERS_SOURCES
 add_executable(multimarkers ${MULTI_MARKERS_SOURCES})
 target_link_libraries(multimarkers ${ARToolKitPlus_LIBS})
 
-if (HIREDIS_FOUND AND REDISIMAGEHELPER_FOUND)
+if (HIREDIS_FOUND AND REDISIMAGEHELPER_FOUND AND RapidJSON_FOUND)
     set(CAMERA_MARKERS_SERVER_SOURCES
         src/cameramarkers_server.cpp)
 

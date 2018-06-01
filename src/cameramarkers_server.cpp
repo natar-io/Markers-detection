@@ -14,9 +14,8 @@
 
 #include <redisimagehelper/RedisImageHelper.hpp>
 
-std::string cameraKey = "custom:image";
-
 bool DEBUG = false;
+std::string cameraKey = "custom:image";
 
 using ARToolKitPlus::TrackerMultiMarker;
 

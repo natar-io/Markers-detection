@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 
 #include <cxxopts.hpp>
 #include <hiredis/hiredis.h>
@@ -86,6 +86,7 @@ int main(int argc, char** argv)
        const rapidjson::Value& marker = markers[i];
        int id = marker["id"].GetInt();
        int dir = marker["dir"].GetInt();
+       std::string type = marker["type"].GetString();
 
        float center[2];
        const rapidjson::Value& centerData = marker["center"];
@@ -95,8 +96,15 @@ int main(int argc, char** argv)
        center[0] = centerData[0].GetFloat();
        center[1] = centerData[1].GetFloat();
 
-       cv::putText(toShow, std::to_string(id), cv::Point(center[0], center[1]),
-               cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cv::Scalar(0, 255, 0), 1, CV_AA);
+       cv::Scalar cornersColor(255, 0, 0), textColor(255, 255, 0);
+       if (type.compare("CTag"))
+       {
+            cornersColor = cv::Scalar(0, 0, 255);
+            textColor = cv::Scalar(255, 0, 255);
+       }
+
+       cv::putText(toShow, type + "#" + std::to_string(id), cv::Point(center[0], center[1]),
+               cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, textColor, 1.1, CV_AA);
 
        const rapidjson::Value& cornersData = marker["corners"];
        if (!cornersData.IsArray()) {
@@ -112,7 +120,7 @@ int main(int argc, char** argv)
            corners[i] = cornersData[i].GetFloat();
            if ((i+1)%2 == 0 && i != 0)
            {
-               cv::circle(toShow, cv::Point(corners[i-1], corners[i]), 5, cv::Scalar(0, 0, 255), 3);
+               cv::circle(toShow, cv::Point(corners[i-1], corners[i]), 5, cornersColor, 3);
            }
        }
     }

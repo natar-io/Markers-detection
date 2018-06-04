@@ -35,8 +35,7 @@ if (HIREDIS_FOUND AND REDISIMAGEHELPER_FOUND AND RapidJSON_FOUND)
         src/cameramarkers_server.cpp)
 
     add_executable(artkmarkers_camera_server ${CAMERA_MARKERS_SERVER_SOURCES})
-    target_link_libraries(artkmarkers_camera_server ${REDISIMAGEHELPER_LIBS} ${ARToolKitPlus_LIBS} ${HIREDIS_LIBS} ${OpenCV_LIBS})
-
+    target_link_libraries(artkmarkers_camera_server ${REDISIMAGEHELPER_LIBS} ${ARToolKitPlus_LIBS} ${HIREDIS_LIBS})
     set(CAMERA_MARKERS_CLIENT_SOURCES
         src/cameramarkers_client.cpp)
 

@@ -5,8 +5,6 @@
 #include <cxxopts.hpp>
 #include <hiredis/hiredis.h>
 
-#include <opencv2/opencv.hpp>
-
 #include <rapidjson/rapidjson.h>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
@@ -16,8 +14,34 @@
 
 bool DEBUG = false;
 std::string cameraKey = "custom:image";
+std::string cameraFile = "../data./no_distortion.cal";
 
 using ARToolKitPlus::TrackerMultiMarker;
+
+static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
+{
+    auto result = options.parse(argc, argv);
+    if (result.count("help")) {
+        std::cout << options.help({"", "Group"});
+        return EXIT_FAILURE;
+    }
+
+    if (result.count("d")) { DEBUG = true; std::cerr << "Debug mode enabled." << std::endl; }
+
+    if (result.count("c")) {
+        cameraFile = result["c"].as<std::string>();
+    }
+    else {
+        cameraFile = "../data/no_distortion.cal";
+        if (DEBUG) { std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraFile << std::endl; }
+    }
+
+    if (result.count("k")) {
+        cameraKey = result["k"].as<std::string>();
+    }
+
+    return 0;
+}
 
 static unsigned char* rgb_to_gray(uint width, uint height, unsigned char* rgb)
 {
@@ -58,25 +82,10 @@ int main(int argc, char** argv)
             ("k, key", "The redis key to fetch and put data on", cxxopts::value<std::string>())
             ("h, help", "Print help");
 
-    auto result = options.parse(argc, argv);
-    if (result.count("help")) {
-        std::cout << options.help({"", "Group"});
+    int retCode = parseCommandLine(options, argc, argv);
+    if (retCode)
+    {
         return EXIT_FAILURE;
-    }
-
-    if (result.count("d")) { DEBUG = true; std::cerr << "Debug mode enabled." << std::endl; }
-
-    std::string cameraFile, imageFile;
-    if (result.count("c")) {
-        cameraFile = result["c"].as<std::string>();
-    }
-    else {
-        cameraFile = "../data/no_distortion.cal";
-        if (DEBUG) { std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraFile << std::endl; }
-    }
-
-    if (result.count("k")) {
-        cameraKey = result["k"].as<std::string>();
     }
 
     RedisImageHelper client;
@@ -110,12 +119,14 @@ int main(int argc, char** argv)
     }
 
     if (DEBUG) { tracker.getCamera()->printSettings(); }
+
+    /* Marker detection options */
     tracker.activateAutoThreshold(true);
     tracker.setMarkerMode(ARToolKitPlus::MARKER_ID_BCH);
     tracker.setBorderWidth(0.125); // BCH markers
     tracker.setUndistortionMode(ARToolKitPlus::UNDIST_NONE);
-    //tracker.setImageProcessingMode(ARToolKitPlus::IMAGE_FULL_RES);
-    //tracker.setUseDetectLite(true);
+    tracker.setImageProcessingMode(ARToolKitPlus::IMAGE_FULL_RES);
+    tracker.setUseDetectLite(true);
 
     tracker.calc(data);
     int markersCount = tracker.getNumDetectedMarkers();
@@ -123,9 +134,6 @@ int main(int argc, char** argv)
     if (DEBUG) {
         std::cerr << "Found " << markersCount << std::endl;
     }
-
-    cv::Mat mat(height, width, CV_8UC1, data), toShow;
-    cv::cvtColor(mat, toShow, CV_GRAY2BGR);
 
     // Building JSON from markers information
     // Creating JSON data structure that will hold markers information
@@ -156,23 +164,22 @@ int main(int argc, char** argv)
         markerObj.AddMember("dir", markerInfo.dir, allocator);
         markerObj.AddMember("confidence", int(markerInfo.cf * 100.0), allocator);
 
-        rapidjson::Value array (rapidjson::kArrayType);
+        rapidjson::Value centerArray (rapidjson::kArrayType);
+        centerArray.PushBack(markerInfo.pos[0], allocator);
+        centerArray.PushBack(markerInfo.pos[1], allocator);
+        markerObj.AddMember("center", centerArray, allocator);
+
+        rapidjson::Value cornerArray (rapidjson::kArrayType);
         for (int points = 0 ; points < 4; points++)
         {
-            array.PushBack(markerInfo.vertex[points][0], allocator);
-            array.PushBack(markerInfo.vertex[points][0], allocator);
-
-            cv::Point p(markerInfo.vertex[points][0], markerInfo.vertex[points][1]);
-            cv::circle(toShow, cv::Point(p), 5, cv::Scalar(0, 0, 255) , 3);
+            cornerArray.PushBack(markerInfo.vertex[points][0], allocator);
+            cornerArray.PushBack(markerInfo.vertex[points][1], allocator);
         }
 
         // Filling the marker obj with the corners data
-        markerObj.AddMember("corners", array, allocator);
+        markerObj.AddMember("corners", cornerArray, allocator);
         // Filling the markers with the generated marker object
         markersObj.PushBack(markerObj, allocator);
-
-        cv::putText(toShow, std::to_string(markersId[i]), cv::Point(markerInfo.pos[0], markerInfo.pos[1]),
-                cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cv::Scalar(0, 255, 0), 1, CV_AA);
     }
 
     // Finally putting everything on the document object
@@ -186,9 +193,6 @@ int main(int argc, char** argv)
     if (DEBUG) {
         std::cerr << strbuf.GetString() << std::endl;
     }
-
-    cv::imshow("gray frame", toShow);
-    cv::waitKey(0);
 
     return EXIT_SUCCESS;
 }

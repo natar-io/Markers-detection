@@ -1,95 +1,100 @@
-#include <cstdio>
+#include <iostream>
+#include <fstream>
+
 #include <ARToolKitPlus/TrackerMultiMarker.h>
+#include <cxxopts.hpp>
+
+bool DEBUG = false;
+std::string cameraFile = "../data/no_distortion.cal";
+std::string imageFile = "../data/markerboard_480-499.raw";
 
 using ARToolKitPlus::TrackerMultiMarker;
 
-int main(int argc, char** argv) {
-    const int width = 320, height = 240, bpp = 1;
-    size_t numPixels = width * height * bpp;
-    size_t numBytesRead;
-    const char *fName = "../data/markerboard_480-499.raw";
-    unsigned char cameraBuffer[numPixels];
+static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
+{
+    auto result = options.parse(argc, argv);
+    if (result.count("h")) {
+        std::cout << options.help({"", "Group"});
+        return EXIT_FAILURE;
+    }
 
-    // try to load a test camera image.
-    // these images files are expected to be simple 8-bit raw pixel
-    // data without any header. the images are expetected to have a
-    // size of 320x240.
-    if (FILE* fp = fopen(fName, "rb")) {
-        numBytesRead = fread(cameraBuffer, 1, numPixels, fp);
+    if (result.count("d")) { 
+        DEBUG = true; 
+        std::cerr << "Debug mode enabled." << std::endl;
+    }
+
+    if (result.count("c")) {
+        cameraFile = result["c"].as<std::string>();
+    }
+    else {
+        if (DEBUG) { std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraFile << std::endl; }
+    }
+
+    if (result.count("i")) {
+        imageFile = result["i"].as<std::string>();
+    }
+
+    if (DEBUG) { std::cerr << "Loading image file: " << imageFile << std::endl; } 
+
+    return 0;
+}
+
+static unsigned char* loadImage(std::string fileName, uint width, uint height)
+{
+    int numPixels = width * height, numBytesRead;
+    unsigned char* data = new unsigned char[numPixels];
+    if (FILE* fp = fopen(fileName.c_str(), "rb")) {
+        numBytesRead = fread(data, 1, numPixels, fp);
         fclose(fp);
     } else {
-        printf("Failed to open %s\n", fName);
-        return -1;
+        if (DEBUG) { std::cerr << "Failed to open " << fileName << std::endl; }
+        return NULL;
     }
 
     if (numBytesRead != numPixels) {
-        printf("Failed to read %s\n", fName);
-        return -1;
+        if(DEBUG) { std::cerr << "Failed to read " << fileName << std::endl; }
+        return NULL;
+    }
+    return data;
+}
+
+int main(int argc, char** argv)
+{
+    cxxopts::Options options("multimarker-detection", "Marker detection sample program using ARToolKitPlus library.");
+    options.add_options()
+        ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
+        ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+        ("i, in-file", "The image file to detect marker on.", cxxopts::value<std::string>())
+        ("h, help", "Print this help message.");
+
+    int result = parseCommandLine(options, argc, argv);
+
+    uint width = 340, height = 220;
+    unsigned char* data = loadImage(imageFile, width, height);
+
+    TrackerMultiMarker* tracker = new TrackerMultiMarker(width, height, 8, 6, 6, 6, 0);
+    tracker->setPixelFormat(ARToolKitPlus::PIXEL_FORMAT_LUM);
+    bool init = tracker->init(cameraFile.c_str(), "../data/markerboard_480-499.cfg", 1.0f, 1000.0f);
+    if (!init)
+    {
+        if (DEBUG) { std::cerr << "Could not initialize Tracker" << std::endl; }
+        return EXIT_FAILURE;
     }
 
-    // create a tracker that does:
-    //  - 6x6 sized marker images (required for binary markers)
-    //  - samples at a maximum of 6x6
-    //  - works with luminance (gray) images
-    //  - can load a maximum of 0 non-binary pattern
-    //  - can detect a maximum of 8 patterns in one image
-    TrackerMultiMarker tracker(width, height, 8, 6, 6, 6, 0);
-
-    tracker.setPixelFormat(ARToolKitPlus::PIXEL_FORMAT_LUM);
-
-    // load a camera file.
-    if (!tracker.init("../data/PGR_M12x0.5_2.5mm.cal", "../data/markerboard_480-499.cfg", 1.0f, 1000.0f)) {
-        printf("ERROR: init() failed\n");
-        return -1;
+    if (DEBUG) {
+        tracker->getCamera()->printSettings();
     }
 
-    tracker.getCamera()->printSettings();
+    /* Marker detection options */
+    tracker->setThreshold(160);
+    tracker->setMarkerMode(ARToolKitPlus::MARKER_ID_SIMPLE);
+    tracker->setBorderWidth(0.125); // BCH markers
+    tracker->setUndistortionMode(ARToolKitPlus::UNDIST_LUT);
+    
+    tracker->calc(data);
 
-    // the marker in the BCH test image has a thiner border...
-    tracker.setBorderWidth(0.125f);
-
-    // set a threshold. we could also activate automatic thresholding
-    tracker.setThreshold(160);
-
-    // let's use lookup-table undistortion for high-speed
-    // note: LUT only works with images up to 1024x1024
-    tracker.setUndistortionMode(ARToolKitPlus::UNDIST_LUT);
-
-    // switch to simple ID based markers
-    // use the tool in tools/IdPatGen to generate markers
-    tracker.setMarkerMode(ARToolKitPlus::MARKER_ID_SIMPLE);
-
-    // do the OpenGL camera setup
-    //glMatrixMode(GL_PROJECTION)
-    //glLoadMatrixf(tracker.getProjectionMatrix());
-
-    // here we go, just one call to find the camera pose
-    int numDetected = tracker.calc(cameraBuffer);
-
-    // use the result of calc() to setup the OpenGL transformation
-    //glMatrixMode(GL_MODELVIEW)
-    //glLoadMatrixf(tracker.getModelViewMatrix());
-
-    printf("\n%d good Markers found and used for pose estimation.\nPose-Matrix:\n  ", numDetected);
-    for (int i = 0; i < 16; i++)
-        printf("%.2f  %s", tracker.getModelViewMatrix()[i], (i % 4 == 3) ? "\n  " : "");
-
-    bool showConfig = false;
-
-    if (showConfig) {
-        const ARToolKitPlus::ARMultiMarkerInfoT *artkpConfig = tracker.getMultiMarkerConfig();
-        printf("%d markers defined in multi marker cfg\n", artkpConfig->marker_num);
-
-        printf("marker matrices:\n");
-        for (int multiMarkerCounter = 0; multiMarkerCounter < artkpConfig->marker_num; multiMarkerCounter++) {
-            printf("marker %d, id %d:\n", multiMarkerCounter, artkpConfig->marker[multiMarkerCounter].patt_id);
-            for (int row = 0; row < 3; row++) {
-                for (int column = 0; column < 4; column++)
-                    printf("%.2f  ", artkpConfig->marker[multiMarkerCounter].trans[row][column]);
-                printf("\n");
-            }
-        }
+    int markersCount = tracker->getNumDetectedMarkers();
+    if (DEBUG) {
+        std::cerr << "Found " << markersCount <<  " ARToolKitPlus markers." << std::endl;
     }
-
-    return 0;
 }

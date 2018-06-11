@@ -37,7 +37,7 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
 
 int main(int argc, char** argv)
 {
-    cxxopts::Options options("artkmarkers", "Marker detection sample program using ARToolKitPlus library.");
+    cxxopts::Options options("markers-detection-client", "Marker detection sample program using ARToolKitPlus library.");
     options.add_options()
             ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
             ("k, key", "The redis key to fetch and put data on", cxxopts::value<std::string>())
@@ -45,7 +45,6 @@ int main(int argc, char** argv)
 
     int retCode = parseCommandLine(options, argc, argv);
     if (retCode) {
-        std::cerr << retCode << std::endl;
         return EXIT_FAILURE;
     }
 

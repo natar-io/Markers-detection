@@ -17,7 +17,7 @@
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
 
-// Custom redis helper library
+// Custom redis image helper library
 #include <redisimagehelper/RedisImageHelper.hpp>
 
 // Opencv (required by chilitags)
@@ -25,7 +25,7 @@
 
 bool DEBUG = false;
 std::string cameraKey = "custom:image";
-std::string cameraFile = "../data./no_distortion.cal";
+std::string cameraFile = "../data/no_distortion.cal";
 
 using ARToolKitPlus::TrackerMultiMarker;
 using chilitags::Chilitags;
@@ -33,19 +33,23 @@ using chilitags::Chilitags;
 static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
 {
     auto result = options.parse(argc, argv);
-    if (result.count("help")) {
+    if (result.count("h")) {
         std::cout << options.help({"", "Group"});
         return EXIT_FAILURE;
     }
 
-    if (result.count("d")) { DEBUG = true; std::cerr << "Debug mode enabled." << std::endl; }
+    if (result.count("d")) {
+        DEBUG = true;
+        std::cerr << "Debug mode enabled." << std::endl;
+    }
 
     if (result.count("c")) {
         cameraFile = result["c"].as<std::string>();
     }
     else {
-        cameraFile = "../data/no_distortion.cal";
-        if (DEBUG) { std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraFile << std::endl; }
+        if (DEBUG) {
+            std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraFile << std::endl;
+        }
     }
 
     if (result.count("k")) {
@@ -168,12 +172,12 @@ static rapidjson::Value* CTagToJSON(const std::pair<int, chilitags::Quad>& tag, 
 
 int main(int argc, char** argv)
 {
-    cxxopts::Options options("artkmarkers", "Marker detection sample program using ARToolKitPlus library.");
+    cxxopts::Options options("markers-detection-server", "Marker detection sample program using ARToolKitPlus library & redis.");
     options.add_options()
             ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
-            ("c, camera-calibration", "The camera calibration file that will be used to correct distortions.", cxxopts::value<std::string>())
-            ("k, key", "The redis key to fetch and put data on", cxxopts::value<std::string>())
-            ("h, help", "Print help");
+            ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+            ("k, key", "The redis key to fetch data from and put data on.", cxxopts::value<std::string>())
+            ("h, help", "Print this help message.");
 
     int retCode = parseCommandLine(options, argc, argv);
     if (retCode)
@@ -183,9 +187,7 @@ int main(int argc, char** argv)
 
     RedisImageHelper client;
     if (!client.connect()) {
-        if (DEBUG) {
-            std::cerr << "Cannot connect to redis server. Please ensure that a redis-server is up and running." << std::endl;
-        }
+        std::cerr << "Cannot connect to redis server. Please ensure that a redis-server is up and running." << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -252,6 +254,18 @@ int main(int argc, char** argv)
     // Finally putting everything on the document object
     jsonMarkers.AddMember("markers", markersObj, allocator);
 
+    if (ARTKTracker->getNumDetectedMarkers() > 0)
+    {
+        rapidjson::Value poseArray(rapidjson::kArrayType);
+        for (int i = 0 ; i < 16 ; i++)
+        {
+            poseArray.PushBack(ARTKTracker->getModelViewMatrix()[i], allocator);
+        }
+        jsonMarkers.AddMember("pose", poseArray, allocator);
+    }
+
+    // TODO: Do the same for chilitags
+
     rapidjson::StringBuffer strbuf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
     jsonMarkers.Accept(writer);
@@ -261,6 +275,8 @@ int main(int argc, char** argv)
         std::cerr << strbuf.GetString() << std::endl;
     }
 
-    delete ARTKTracker, chilitagsMarkers;
+    //if (ARTKTracker != NULL) { delete ARTKTracker; }
+    //if (chilitagsMarkers != NULL) { delete chilitagsMarkers; }
+
     return EXIT_SUCCESS;
 }

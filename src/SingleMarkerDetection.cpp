@@ -29,15 +29,15 @@ static unsigned char* loadImage(std::string fileName, uint width, uint height)
 
 int main(int argc, char** argv)
 {
-    cxxopts::Options options("artkmarkers", "Marker detection sample program using ARToolKitPlus library.");
+    cxxopts::Options options("singlemarker-detection", "Marker detection sample program using ARToolKitPlus library.");
     options.add_options()
             ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
-            ("c, camera-calibration", "The camera calibration file that will be used to correct distortions.", cxxopts::value<std::string>())
-            ("i, in-file", "The image file to detect marker on", cxxopts::value<std::string>())
-            ("h, help", "Print help");
+            ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+            ("i, in-file", "The image file to detect marker on.", cxxopts::value<std::string>())
+            ("h, help", "Print this help message.");
 
     auto result = options.parse(argc, argv);
-    if (result.count("help")) {
+    if (result.count("h")) {
         std::cout << options.help({"", "Group"});
         return EXIT_FAILURE;
     }

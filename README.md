@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Markers detection
 
 Collection of **C++** programs for markers detection using ARToolKitPlus and Chilitags libraries.
@@ -94,19 +93,3 @@ The following commands (with a redis server up and running)
 ```
 gives the following output:
 ![alt](data/res-example.png)
-=======
-
-## Requirements
-
-### ARtoolkitPlus download:
-
-[https://launchpad.net/artoolkitplus/+download](https://launchpad.net/artoolkitplus/trunk/2.3.1/+download/ARToolKitPlus-2.3.1.tar.bz2)
-
-Build with CMake ok. 
-
-### Chilitags download:
-
-https://github.com/chili-epfl/chilitags/releases
-
-Build with CMake not ok. 
->>>>>>> acdafb9... First readme.

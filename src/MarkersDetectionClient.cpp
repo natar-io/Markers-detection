@@ -13,7 +13,7 @@
 #include <redisimagehelper/RedisImageHelper.hpp>
 
 bool DEBUG = false;
-std::string cameraKey = "custom:image";
+std::string mainKey = "custom:image";
 
 static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
 {
@@ -29,7 +29,7 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
     }
 
     if (result.count("k")) {
-        cameraKey = result["k"].as<std::string>();
+        mainKey = result["k"].as<std::string>();
     }
 
     return 0;
@@ -54,14 +54,14 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    client.setCameraKey(cameraKey);
+    client.setMainKey(mainKey);
 
     size_t dataLength;
-    char* markersData = client.getString(cameraKey + ":detected-markers", dataLength);
+    char* markersData = client.getString(mainKey + ":detected-markers", dataLength);
     Image* image = client.getImage();
     if (image == NULL)
     {
-        std::cerr << "Could not fetch image data from key: " << cameraKey << std::endl;
+        std::cerr << "Could not fetch image data from key: " << mainKey << std::endl;
         return EXIT_FAILURE;
     }
     uint width = image->width();

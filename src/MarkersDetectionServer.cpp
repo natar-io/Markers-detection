@@ -24,7 +24,7 @@
 #include <opencv2/opencv.hpp>
 
 bool DEBUG = false;
-std::string cameraKey = "custom:image";
+std::string mainKey = "custom:image";
 std::string cameraFile = "../data/no_distortion.cal";
 
 using ARToolKitPlus::TrackerMultiMarker;
@@ -53,7 +53,7 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
     }
 
     if (result.count("k")) {
-        cameraKey = result["k"].as<std::string>();
+        mainKey = result["k"].as<std::string>();
     }
 
     return 0;
@@ -191,7 +191,7 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    client.setCameraKey(cameraKey);
+    client.setMainKey(mainKey);
     Image* image = client.getImage();
     if (image == NULL) {
         if (DEBUG) {
@@ -270,7 +270,8 @@ int main(int argc, char** argv)
     rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
     jsonMarkers.Accept(writer);
 
-    client.setString(cameraKey + ":detected-markers", (char*)strbuf.GetString());
+    client.setString((char*)strbuf.GetString(), mainKey + ":detected-markers");
+    client.publishString((char*)strbuf.GetString(), mainKey + ":detected-markers");
     if (DEBUG) {
         std::cerr << strbuf.GetString() << std::endl;
     }

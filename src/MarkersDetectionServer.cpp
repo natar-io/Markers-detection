@@ -117,11 +117,15 @@ static rapidjson::Value* ARTKMarkerToJSON(const ARToolKitPlus::ARMarkerInfo& mar
     markerObj->AddMember("center", centerArray, allocator);
 
     rapidjson::Value cornerArray (rapidjson::kArrayType);
-    for (int points = 0 ; points < 4; ++points)
+    // WARNING: corners should be pushed in the following order:
+    // top left - top right - bot right - bot left
+    for (int points = 1 ; points < 4 ; ++points)
     {
         cornerArray.PushBack(markerInfo.vertex[points][0], allocator);
         cornerArray.PushBack(markerInfo.vertex[points][1], allocator);
     }
+    cornerArray.PushBack(markerInfo.vertex[3][0], allocator);
+    cornerArray.PushBack(markerInfo.vertex[3][1], allocator);
 
     // Filling the marker obj with the corners data
     markerObj->AddMember("corners", cornerArray, allocator);
@@ -253,18 +257,6 @@ int main(int argc, char** argv)
 
     // Finally putting everything on the document object
     jsonMarkers.AddMember("markers", markersObj, allocator);
-
-    if (ARTKTracker->getNumDetectedMarkers() > 0)
-    {
-        rapidjson::Value poseArray(rapidjson::kArrayType);
-        for (int i = 0 ; i < 16 ; i++)
-        {
-            poseArray.PushBack(ARTKTracker->getModelViewMatrix()[i], allocator);
-        }
-        jsonMarkers.AddMember("pose", poseArray, allocator);
-    }
-
-    // TODO: Do the same for chilitags
 
     rapidjson::StringBuffer strbuf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);

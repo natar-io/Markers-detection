@@ -89,6 +89,7 @@ static TrackerMultiMarker* detectARTKMarkers(unsigned char* grayImage, uint widt
     tracker->setBorderWidth(0.125); // BCH markers
     tracker->setUndistortionMode(ARToolKitPlus::UNDIST_NONE);
     tracker->setImageProcessingMode(ARToolKitPlus::IMAGE_FULL_RES);
+    //    tracker->setPoseEstimator(ARToolKitPlus::POSE_ESTIMATOR_RPP);
     tracker->setUseDetectLite(true);
 
     tracker->calc(grayImage);
@@ -119,14 +120,29 @@ static rapidjson::Value* ARTKMarkerToJSON(const ARToolKitPlus::ARMarkerInfo& mar
     rapidjson::Value cornerArray (rapidjson::kArrayType);
     // WARNING: corners should be pushed in the following order:
     // top left - top right - bot right - bot left
-    for (int points = 1 ; points < 4 ; ++points)
-    {
-        cornerArray.PushBack(markerInfo.vertex[points][0], allocator);
-        cornerArray.PushBack(markerInfo.vertex[points][1], allocator);
-    }
+    // for (int points = 0 ; points < 4 ; ++points)
+    // {
+    //     cornerArray.PushBack(markerInfo.vertex[points][0], allocator);
+    //     cornerArray.PushBack(markerInfo.vertex[points][1], allocator);
+    // }
+
+        // A
+    cornerArray.PushBack(markerInfo.vertex[2][0], allocator);
+    cornerArray.PushBack(markerInfo.vertex[2][1], allocator);
+    // B
     cornerArray.PushBack(markerInfo.vertex[3][0], allocator);
     cornerArray.PushBack(markerInfo.vertex[3][1], allocator);
 
+    // C
+    cornerArray.PushBack(markerInfo.vertex[0][0], allocator);
+    cornerArray.PushBack(markerInfo.vertex[0][1], allocator);
+
+    // D
+    cornerArray.PushBack(markerInfo.vertex[1][0], allocator);
+    cornerArray.PushBack(markerInfo.vertex[1][1], allocator);
+
+
+    
     // Filling the marker obj with the corners data
     markerObj->AddMember("corners", cornerArray, allocator);
     return markerObj;

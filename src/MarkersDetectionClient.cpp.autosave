@@ -41,7 +41,6 @@ int main(int argc, char** argv)
     options.add_options()
             ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
             ("k, key", "The redis key to fetch and put data on", cxxopts::value<std::string>())
-            ("o output", "The redis output key to set/publish data on");
             ("h, help", "Print help");
 
     int retCode = parseCommandLine(options, argc, argv);

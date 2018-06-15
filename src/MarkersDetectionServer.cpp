@@ -10,6 +10,8 @@
 
 // Redis C bindings
 #include <hiredis/hiredis.h>
+#include <hiredis/async.h>
+#include <hiredis/adapters/libevent.h>
 
 // JSON formatting library
 #include <rapidjson/rapidjson.h>
@@ -23,9 +25,13 @@
 // Opencv (required by chilitags)
 #include <opencv2/opencv.hpp>
 
-bool DEBUG = false;
-std::string mainKey = "custom:image";
-std::string cameraFile = "../data/no_distortion.cal";
+bool VERBOSE = false;
+bool STREAM_MODE = true;
+std::string redisInputKey = "custom:image";
+std::string redisOutputKey = "custom:image:output";
+std::string redisHost = "127.0.0.1";
+int redisPort = 6379;
+std::string cameraCalibrationFile = "../data/no_distortion.cal";
 
 using ARToolKitPlus::TrackerMultiMarker;
 using chilitags::Chilitags;
@@ -38,24 +44,77 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    if (result.count("d")) {
-        DEBUG = true;
-        std::cerr << "Debug mode enabled." << std::endl;
+    if (result.count("v")) {
+        VERBOSE = true;
+        std::cerr << "Verbose mode enabled." << std::endl;
     }
 
     if (result.count("c")) {
-        cameraFile = result["c"].as<std::string>();
+        cameraCalibrationFile = result["c"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Camera file specified. Using " << cameraCalibrationFile << " as camera calibration file." << std::endl;
+        }
     }
     else {
-        if (DEBUG) {
-            std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraFile << std::endl;
+        if (VERBOSE) {
+            std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraCalibrationFile << std::endl;
         }
     }
 
-    if (result.count("k")) {
-        mainKey = result["k"].as<std::string>();
+    if (result.count("i")) {
+        redisInputKey = result["i"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Input key was set to `" << redisInputKey << "`." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No input key was specified. Input key was set to default (" << redisInputKey << ")." << std::endl;
+        }
     }
 
+    if (result.count("o")) {
+        redisOutputKey = result["o"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Output key was set to `" << redisOutputKey << "`." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No output key was specified. Output key was set to default (" << redisOutputKey << ")." << std::endl;
+        }
+    }
+
+    if (result.count("u")) {
+        STREAM_MODE = false;
+        if (VERBOSE) {
+            std::cerr << "Unique mode enabled." << std::endl;
+        }
+    }
+
+    if (result.count("redis-port")) {
+        redisPort = result["redis-port"].as<int>();
+        if (VERBOSE) {
+            std::cerr << "Redis port set to " << redisPort << "." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No redis port specified. Redis port was set to " << redisPort << "." << std::endl;
+        }
+    }
+
+    if (result.count("redis-host")) {
+        redisHost = result["redis-host"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Redis host set to " << redisHost << "." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No redis host was specified. Redis host was set to " << redisHost << "." << std::endl;
+        }
+    }
     return 0;
 }
 
@@ -74,14 +133,14 @@ static TrackerMultiMarker* detectARTKMarkers(unsigned char* grayImage, uint widt
 {
     TrackerMultiMarker* tracker = new TrackerMultiMarker(width, height, 20, 6, 6, 6, 20);
     tracker->setPixelFormat(ARToolKitPlus::PIXEL_FORMAT_LUM);
-    bool init = tracker->init(cameraFile.c_str(), "../data/markerboard_480-499.cfg", 1.0f, 1000.0f);
+    bool init = tracker->init(cameraCalibrationFile.c_str(), "../data/markerboard_480-499.cfg", 1.0f, 1000.0f);
     if (!init)
     {
-        if (DEBUG) { std::cerr << "Could not initialize Tracker" << std::endl; }
+        if (VERBOSE) { std::cerr << "Could not initialize Tracker" << std::endl; }
         return NULL;
     }
 
-    if (DEBUG) { tracker->getCamera()->printSettings(); }
+    if (VERBOSE) { tracker->getCamera()->printSettings(); }
 
     /* Marker detection options */
     tracker->activateAutoThreshold(true);
@@ -99,7 +158,7 @@ static TrackerMultiMarker* detectARTKMarkers(unsigned char* grayImage, uint widt
 static rapidjson::Value* ARTKMarkerToJSON(const ARToolKitPlus::ARMarkerInfo& markerInfo, rapidjson::Document::AllocatorType& allocator)
 {
     rapidjson::Value* markerObj = new rapidjson::Value(rapidjson::kObjectType);
-    if (DEBUG) {
+    if (VERBOSE) {
         std::cerr << "Markers #" << markerInfo.id << std::endl
                   << "[Info]" << std::endl
                   << "\t" << "pos: " << markerInfo.pos[0] << ";" << markerInfo.pos[1] << std::endl
@@ -120,28 +179,17 @@ static rapidjson::Value* ARTKMarkerToJSON(const ARToolKitPlus::ARMarkerInfo& mar
     rapidjson::Value cornerArray (rapidjson::kArrayType);
     // WARNING: corners should be pushed in the following order:
     // top left - top right - bot right - bot left
-    // for (int points = 0 ; points < 4 ; ++points)
-    // {
-    //     cornerArray.PushBack(markerInfo.vertex[points][0], allocator);
-    //     cornerArray.PushBack(markerInfo.vertex[points][1], allocator);
-    // }
-
-        // A
     cornerArray.PushBack(markerInfo.vertex[2][0], allocator);
     cornerArray.PushBack(markerInfo.vertex[2][1], allocator);
-    // B
+
     cornerArray.PushBack(markerInfo.vertex[3][0], allocator);
     cornerArray.PushBack(markerInfo.vertex[3][1], allocator);
 
-    // C
     cornerArray.PushBack(markerInfo.vertex[0][0], allocator);
     cornerArray.PushBack(markerInfo.vertex[0][1], allocator);
 
-    // D
     cornerArray.PushBack(markerInfo.vertex[1][0], allocator);
     cornerArray.PushBack(markerInfo.vertex[1][1], allocator);
-
-
     
     // Filling the marker obj with the corners data
     markerObj->AddMember("corners", cornerArray, allocator);
@@ -164,7 +212,8 @@ static rapidjson::Value* CTagToJSON(const std::pair<int, chilitags::Quad>& tag, 
 {
     rapidjson::Value* tagObj = new rapidjson::Value(rapidjson::kObjectType);
     int id = tag.first;
-    int dir = 0; //TODO: Compute it (easy)
+    //TODO: Compute it.
+    int dir = 0;
     tagObj->AddMember("id", id, allocator);
     tagObj->AddMember("dir", dir, allocator);
     tagObj->AddMember("confidence", 100, allocator);
@@ -190,13 +239,34 @@ static rapidjson::Value* CTagToJSON(const std::pair<int, chilitags::Quad>& tag, 
     return tagObj;
 }
 
+void onImageDataRecieved(redisAsyncContext* c, void* rep, void* privdata) {
+    redisReply *reply = (redisReply*)rep;
+    if (reply == NULL){
+        cout <<"Response not recevied" << endl;
+        return;
+    }
+
+    if(reply->type == REDIS_REPLY_ARRAY & reply->elements == 3)
+    {
+        if(strcmp( reply->element[0]->str, "subscribe") != 0)
+        {
+            std::cerr << "Message recieved on channel `" << reply->element[1]->str << "`" << std::endl;
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     cxxopts::Options options("markers-detection-server", "Marker detection sample program using ARToolKitPlus library & redis.");
     options.add_options()
-            ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
+            ("i, input", "The redis input key where data are going to arrive.", cxxopts::value<std::string>())
+            ("o, output", "The redis output key where to set output data.", cxxopts::value<std::string>())
+            ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
+            ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
+            ("redis-port", "The port to which the redis client should try to connect.", cxxopts::value<int>())
+            ("redis-host", "The host adress to which the redis client should try to connect", cxxopts::value<std::string>())
             ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
-            ("k, key", "The redis key to fetch data from and put data on.", cxxopts::value<std::string>())
+            ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
             ("h, help", "Print this help message.");
 
     int retCode = parseCommandLine(options, argc, argv);
@@ -205,87 +275,96 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    RedisImageHelper client;
+    RedisImageHelper client(redisHost, redisPort, redisInputKey);
     if (!client.connect()) {
         std::cerr << "Cannot connect to redis server. Please ensure that a redis-server is up and running." << std::endl;
         return EXIT_FAILURE;
     }
 
-    client.setMainKey(mainKey);
-    Image* image = client.getImage();
-    if (image == NULL) {
-        if (DEBUG) {
-            std::cerr << "Could not fetch image data from redis server. Please ensure that the key you provided data from is correct." << std::endl;
+    // If stream mode we need a client to publish & another redis asynchronous context to subscribe
+    struct event_base* event = event_base_new();
+    redisAsyncContext* asyncRedis = redisAsyncConnect(redisHost, redisPort);
+    redisLibeventAttach(asyncRedis, event);
+
+    if (STREAM_MODE) {
+        redisAsyncCommand(asyncRedis, onImageDataRecieved, (char*)"", "SUBSCRIBE %s", redisInputKey.c_str());
+    }
+    else {
+        Image* image = client.getImage(redisInputKey);
+        if (image == NULL) {
+            if (VERBOSE) {
+                std::cerr << "Could not fetch image data from redis server. Please ensure that the key you provided data from is correct." << std::endl;
+            }
+            return EXIT_FAILURE;
         }
-        return EXIT_FAILURE;
+
+        // Getting image info from Redis
+        uint width = image->width();
+        uint height = image->height();
+        unsigned char* data = rgb_to_gray(width, height, image->data());
+
+        // Creating JSON data structure that will hold markers information
+        rapidjson::Document jsonMarkers;
+        jsonMarkers.SetObject();
+        rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
+        // markersObj will be the array holding each individual marker objects.
+        rapidjson::Value markersObj(rapidjson::kArrayType);
+
+        // Detect ARToolkitMarkers
+        TrackerMultiMarker* ARTKTracker = detectARTKMarkers(data, width, height);
+        if (ARTKTracker == NULL)
+        {
+            return EXIT_FAILURE;
+        }
+        int markersCount = ARTKTracker->getNumDetectedMarkers();
+        if (VERBOSE) {
+            std::cerr << "Found " << markersCount <<  " ARToolKitPlus markers." << std::endl;
+        }
+
+        for(int i = 0 ; i < markersCount ; i++)
+        {
+            auto markerInfo = ARTKTracker->getDetectedMarker(i);
+            // Converting markerInfo to rapidjson obj
+            rapidjson::Value* markerObj = ARTKMarkerToJSON(markerInfo, allocator);
+
+            // Filling the markers with the generated marker object
+            markersObj.PushBack(*markerObj, allocator);
+            delete markerObj;
+        }
+
+        // Detect Chilitags markers
+        chilitags::TagCornerMap* chilitagsMarkers = detectChilitagsMarkers(data, width, height);
+        if (chilitagsMarkers == NULL) {
+            return EXIT_FAILURE;
+        }
+        markersCount = chilitagsMarkers->size();
+        if (VERBOSE) {
+            std::cerr << "Found " << markersCount << " Chilitags markers." << std::endl;
+        }
+
+        for (const std::pair<int, chilitags::Quad>& tag : *chilitagsMarkers)
+        {
+            rapidjson::Value* tagObj = CTagToJSON(tag, allocator);
+            markersObj.PushBack(*tagObj, allocator);
+            delete tagObj;
+        }
+
+        // Finally putting everything on the document object
+        jsonMarkers.AddMember("markers", markersObj, allocator);
+
+        rapidjson::StringBuffer strbuf;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
+        jsonMarkers.Accept(writer);
+
+        client.setString((char*)strbuf.GetString(), redisOutputKey);
+        client.publishString((char*)strbuf.GetString(), redisOutputKey);
+        if (VERBOSE) {
+            std::cerr << strbuf.GetString() << std::endl;
+        }
+
+        //if (ARTKTracker != NULL) { delete ARTKTracker; }
+        //if (chilitagsMarkers != NULL) { delete chilitagsMarkers; }
     }
-
-    // Getting image info from Redis
-    uint width = image->width();
-    uint height = image->height();
-    unsigned char* data = rgb_to_gray(width, height, image->data());
-
-    // Creating JSON data structure that will hold markers information
-    rapidjson::Document jsonMarkers;
-    jsonMarkers.SetObject();
-    rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
-    // markersObj will be the array holding each individual marker objects.
-    rapidjson::Value markersObj(rapidjson::kArrayType);
-
-    // Detect ARToolkitMarkers
-    TrackerMultiMarker* ARTKTracker = detectARTKMarkers(data, width, height);
-    if (ARTKTracker == NULL)
-    {
-        return EXIT_FAILURE;
-    }
-    int markersCount = ARTKTracker->getNumDetectedMarkers();
-    if (DEBUG) {
-        std::cerr << "Found " << markersCount <<  " ARToolKitPlus markers." << std::endl;
-    }
-
-    for(int i = 0 ; i < markersCount ; i++)
-    {
-        auto markerInfo = ARTKTracker->getDetectedMarker(i);
-        // Converting markerInfo to rapidjson obj
-        rapidjson::Value* markerObj = ARTKMarkerToJSON(markerInfo, allocator);
-
-        // Filling the markers with the generated marker object
-        markersObj.PushBack(*markerObj, allocator);
-        delete markerObj;
-    }
-
-    // Detect Chilitags markers
-    chilitags::TagCornerMap* chilitagsMarkers = detectChilitagsMarkers(data, width, height);
-    if (chilitagsMarkers == NULL) {
-        return EXIT_FAILURE;
-    }
-    markersCount = chilitagsMarkers->size();
-    if (DEBUG) {
-        std::cerr << "Found " << markersCount << " Chilitags markers." << std::endl;
-    }
-
-    for (const std::pair<int, chilitags::Quad>& tag : *chilitagsMarkers)
-    {
-        rapidjson::Value* tagObj = CTagToJSON(tag, allocator);
-        markersObj.PushBack(*tagObj, allocator);
-        delete tagObj;
-    }
-
-    // Finally putting everything on the document object
-    jsonMarkers.AddMember("markers", markersObj, allocator);
-
-    rapidjson::StringBuffer strbuf;
-    rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
-    jsonMarkers.Accept(writer);
-
-    client.setString((char*)strbuf.GetString(), mainKey + ":detected-markers");
-    client.publishString((char*)strbuf.GetString(), mainKey + ":detected-markers");
-    if (DEBUG) {
-        std::cerr << strbuf.GetString() << std::endl;
-    }
-
-    //if (ARTKTracker != NULL) { delete ARTKTracker; }
-    //if (chilitagsMarkers != NULL) { delete chilitagsMarkers; }
 
     return EXIT_SUCCESS;
 }

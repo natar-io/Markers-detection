@@ -15,48 +15,140 @@
 bool DEBUG = false;
 std::string mainKey = "custom:image";
 
+struct contextData {
+    uint width;
+    uint height;
+    uint channels;
+};
+
 static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
 {
     auto result = options.parse(argc, argv);
-    if (result.count("help")) {
+    if (result.count("h")) {
         std::cout << options.help({"", "Group"});
         return EXIT_FAILURE;
     }
 
-    if (result.count("d")) {
-        DEBUG = true;
-        std::cerr << "Debug mode enabled." << std::endl;
+    if (result.count("v")) {
+        VERBOSE = true;
+        std::cerr << "Verbose mode enabled." << std::endl;
     }
 
-    if (result.count("k")) {
-        mainKey = result["k"].as<std::string>();
+    if (result.count("i")) {
+        redisInputKey = result["i"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Input key was set to `" << redisInputKey << "`." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No input key was specified. Input key was set to default (" << redisInputKey << ")." << std::endl;
+        }
     }
 
+    if (result.count("u")) {
+        STREAM_MODE = false;
+        if (VERBOSE) {
+            std::cerr << "Unique mode enabled." << std::endl;
+        }
+    }
+
+    if (result.count("redis-port")) {
+        redisPort = result["redis-port"].as<int>();
+        if (VERBOSE) {
+            std::cerr << "Redis port set to " << redisPort << "." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No redis port specified. Redis port was set to " << redisPort << "." << std::endl;
+        }
+    }
+
+    if (result.count("redis-host")) {
+        redisHost = result["redis-host"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Redis host set to " << redisHost << "." << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No redis host was specified. Redis host was set to " << redisHost << "." << std::endl;
+        }
+    }
     return 0;
+}
+
+void parseMarkerJson() {
+
+}
+
+void onMarkersDataPublished (redisAsyncContext* context, void* rep, void* privdata) {
+    redisReply *reply = (redisReply*) rep;
+    if  (reply == NULL) { return; }
+    if (reply->type != REDIS_REPLY_ARRAY || reply->elements != 3) {
+        if (VERBOSE) {
+            std::cerr << "Error: Bad reply format." << std::endl;
+        }
+        return;
+    }
+
+    struct contextData* data = static_cast<struct contextData*>(privdata);
+    if (data == NULL) {
+        if(VERBOSE) {
+            std::cerr << "Could not data from private data." << std::endl;
+        }
+        return;
+    }
+    uint width = data->width;
+    uint height = data->height;
+    uint channels = data->channels;
+
+
 }
 
 int main(int argc, char** argv)
 {
-    cxxopts::Options options("markers-detection-client", "Marker detection sample program using ARToolKitPlus library.");
+    cxxopts::Options options("markers-detection-client", "Marker detection sample program using ARToolKitPlus library & redis.");
     options.add_options()
-            ("d, debug", "Enable debug mode. This will print helpfull process informations on the standard error stream.")
-            ("k, key", "The redis key to fetch and put data on", cxxopts::value<std::string>())
-            ("o output", "The redis output key to set/publish data on");
-            ("h, help", "Print help");
+            ("redis-port", "The port to which the redis client should try to connect.", cxxopts::value<int>())
+            ("redis-host", "The host adress to which the redis client should try to connect", cxxopts::value<std::string>())
+            ("i, input", "The redis input key where data are going to arrive.", cxxopts::value<std::string>())
+            ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
+            ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
+            ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
+            ("h, help", "Print this help message.");
 
     int retCode = parseCommandLine(options, argc, argv);
     if (retCode) {
         return EXIT_FAILURE;
     }
 
-    RedisImageHelper client;
-    if (!client.connect()) {
-        std::cerr << "Cannot connect to redis server. Please ensure that a redis-server is up and running." << std::endl;
+    RedisImageHelperSync clientSync(redisHost, redisPort, redisInputKey);
+    if (!clientSync.connect()) {
+        std::cerr << "Cannot connect to redis server. Please ensure that a redis server is up and running." << std::endl;
         return EXIT_FAILURE;
     }
 
-    client.setMainKey(mainKey);
+    struct contextData data;
+    data.width = clientSync.getInt(redisInputKey + ":width");
+    data.height = clientSync.getInt(redisInputKey + ":height");
+    data.channels = clientSync.getInt(redisInputKey + ":channels");
 
+    if (STREAM_MODE) {
+        // In stream mode we need another client that will subscribe to the input key channel.
+        RedisImageHelperAsync clientAsync(redisHost, redisPort, redisInputKey);
+        if (!clientAsync.connect()) {
+            std::cerr << "Cannot connect to redis server. Please ensure that a redis server is up and running." << std::endl;
+            return EXIT_FAILURE;
+        }
+        clientAsync.subscribe(redisInputKey, onMarkersDataPublished, static_cast<void*>(&data));
+    }
+    else {
+
+    }
+
+            /*
     size_t dataLength;
     char* markersData = client.getString(mainKey + ":detected-markers", dataLength);
     Image* image = client.getImage();
@@ -127,4 +219,5 @@ int main(int argc, char** argv)
 
     cv::imshow("frame", toShow);
     cv::waitKey(0);
+    */
 }

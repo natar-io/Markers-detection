@@ -18,6 +18,7 @@ find_package(redisimagehelper)
 find_package(hiredis)
 find_package(RapidJSON)
 find_package(chilitags)
+find_package(ev)
 
 set(SINGLE_MARKER_SOURCES
     src/SingleMarkerDetection.cpp)
@@ -31,15 +32,16 @@ set(MULTI_MARKERS_SOURCES
 add_executable(multimarkers-detection ${MULTI_MARKERS_SOURCES})
 target_link_libraries(multimarkers-detection ${ARToolKitPlus_LIBS})
 
-if (HIREDIS_FOUND AND REDISIMAGEHELPER_FOUND AND RapidJSON_FOUND AND CHILITAGS_FOUND)
+if (HIREDIS_FOUND AND REDISIMAGEHELPER_FOUND AND RapidJSON_FOUND AND CHILITAGS_FOUND AND EV_FOUND)
+    include_directories(${REDISIMAGEHELPER_INCLUDE_DIR})
 
     set(CAMERA_MARKERS_SERVER_SOURCES
         src/MarkersDetectionServer.cpp)
     add_executable(markers-detection-server ${CAMERA_MARKERS_SERVER_SOURCES})
-    target_link_libraries(markers-detection-server ${REDISIMAGEHELPER_LIBS} ${ARToolKitPlus_LIBS} ${HIREDIS_LIBS} ${CHILITAGS_LIBS} ${OpenCV_LIBS})
+    target_link_libraries(markers-detection-server ${REDISIMAGEHELPER_LIBS} ${ARToolKitPlus_LIBS} ${HIREDIS_LIBS} ${EV_LIBS} ${CHILITAGS_LIBS} ${OpenCV_LIBS})
 
-    set(CAMERA_MARKERS_CLIENT_SOURCES
-        src/MarkersDetectionClient.cpp)
-    add_executable(markers-detection-client ${CAMERA_MARKERS_CLIENT_SOURCES})
-    target_link_libraries(markers-detection-client ${REDISIMAGEHELPER_LIBS} ${HIREDIS_LIBS} ${OpenCV_LIBS})
+    #set(CAMERA_MARKERS_CLIENT_SOURCES
+        #src/MarkersDetectionClient.cpp)
+    #add_executable(markers-detection-client ${CAMERA_MARKERS_CLIENT_SOURCES})
+    #target_link_libraries(markers-detection-client ${REDISIMAGEHELPER_LIBS} ${HIREDIS_LIBS} ${EV_LIBS} ${OpenCV_LIBS})
 endif()

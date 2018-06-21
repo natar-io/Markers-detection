@@ -34,6 +34,7 @@ bool VERBOSE = false;
 bool STREAM_MODE = true;
 std::string redisInputKey = "custom:image";
 std::string redisOutputKey = "custom:image:output";
+std::string redisInputCameraParametersKey = "default:camera:parameters";
 std::string redisHost = "127.0.0.1";
 std::string cameraCalibrationFile = "../data/no_distortion.cal";
 
@@ -143,6 +144,19 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
             std::cerr << "No redis host was specified. Redis host was set to " << redisHost << "." << std::endl;
         }
     }
+
+    if (result.count("camera-parameters")) {
+        redisInputCameraParametersKey = result["camera-parameters"].as<std::string>();
+        if (VERBOSE) {
+            std::cerr << "Camera parameters output key was set to " << redisInputCameraParametersKey << std::endl;
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No camera parameters output key specified. Camera parameters output key was set to " << redisInputCameraParametersKey << std::endl;
+        }
+    }
+
     return 0;
 }
 
@@ -359,6 +373,7 @@ int main(int argc, char** argv)
             ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
             ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<std::string>()) //TODO
             ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+            ("camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
             ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
             ("h, help", "Print this help message.");
 
@@ -375,9 +390,13 @@ int main(int argc, char** argv)
     }
 
     struct contextData data;
-    data.width = clientSync.getInt(redisInputKey + ":width");
-    data.height = clientSync.getInt(redisInputKey + ":height");
-    data.channels = clientSync.getInt(redisInputKey + ":channels");
+    data.width = clientSync.getInt(redisInputCameraParametersKey + ":width");
+    data.height = clientSync.getInt(redisInputCameraParametersKey + ":height");
+    data.channels = clientSync.getInt(redisInputCameraParametersKey + ":channels");
+    if (data.width == -1 || data.height == -1 || data.channels == -1) {
+        std::cerr << "Could not find camera parameters (width height chanels). Please specify where to find them in redis with the --camera-parameters option parameters." << std::endl;
+        return EXIT_FAILURE;
+    }
 
     TrackerMultiMarker* tracker = createARTKTracker(data.width, data.height);
     data.ARTKTracker = tracker;
@@ -393,7 +412,7 @@ int main(int argc, char** argv)
         clientAsync.subscribe(redisInputKey, onImagePublished, static_cast<void*>(&data));
     }
     else {
-        Image* image = clientSync.getImage(redisInputKey);
+        Image* image = clientSync.getImage(data.width, data.height, data.channels, redisInputKey);
         if (image == NULL) {
             if (VERBOSE) {
                 std::cerr << "Could not fetch image data from redis server. Please ensure that the key you provided is correct." << std::endl;

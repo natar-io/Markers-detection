@@ -121,6 +121,13 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         }
     }
 
+    if (result.count("m")) {
+        markerType = result["m"].as<int>();
+        if (VERBOSE) {
+            std::cerr << "Marker type was set to " << (markerType == CTAG ? "`Chillitags`" : "`ARToolKit`") << std::endl;
+        }
+    }
+
     if (result.count("redis-port")) {
         redisPort = result["redis-port"].as<int>();
         if (VERBOSE) {
@@ -354,6 +361,22 @@ static rapidjson::Value* CTagToJSON(const std::pair<int, chilitags::Quad>& tag, 
     return tagObj;
 }
 
+static rapidjson::Value* CTagsToJSON(chilitags::TagCornerMap* tags, rapidjson::Document::AllocatorType& allocator) {
+    rapidjson::Value* tagsObj = new rapidjson::Value(rapidjson::kArrayType);
+    int markersCount = tags->size();
+    if (VERBOSE) {
+        std::cerr << "Found " << markersCount << " Chilitags markers." << std::endl;
+    }
+
+    for (const std::pair<int, chilitags::Quad>& tag : *tags)
+    {
+        rapidjson::Value* tagObj = CTagToJSON(tag, allocator);
+        tagsObj->PushBack(*tagObj, allocator);
+        delete tagObj;
+    }
+    return tagsObj;
+}
+
 void onImagePublished(redisAsyncContext* c, void* rep, void* privdata) {
     redisReply *reply = (redisReply*) rep;
     if  (reply == NULL) { return; }
@@ -384,22 +407,34 @@ void onImagePublished(redisAsyncContext* c, void* rep, void* privdata) {
         }
         return;
     }
-    unsigned char* grayData = rgb_to_gray(width, height, image->data());
-    cv::Mat opencvImage(width, height, CV_8UC1, grayData);
 
-    detectARTKMarkers(ARTKTracker, grayData);
+    unsigned char* grayData = rgb_to_gray(width, height, image->data());
 
     // Creating JSON data structure that will hold markers information.
     rapidjson::Document jsonMarkers;
     jsonMarkers.SetObject();
     rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
 
-    // markersObj will be the array holding each individual marker objects.
-    rapidjson::Value* markersObj = ARTKMarkersToJSON(opencvImage, ARTKTracker, allocator);
+    if (markerType == ARTK) {
+        cv::Mat opencvImage(width, height, CV_8UC1, grayData);
+        detectARTKMarkers(ARTKTracker, grayData);
 
-    // Finally putting everything on the document object
-    jsonMarkers.AddMember("markers", *markersObj, allocator);
+        // markersObj will be the array holding each individual marker objects.
+        rapidjson::Value* markersObj = ARTKMarkersToJSON(opencvImage, ARTKTracker, allocator);
 
+        // Finally putting everything on the document object
+        jsonMarkers.AddMember("markers", *markersObj, allocator);
+    }
+    else if (markerType == CTAG)
+    {
+        chilitags::TagCornerMap* map = detectCTags(grayData, width, height);
+
+        // markersObj will be the array holding each individual marker objects.
+        rapidjson::Value* markersObj = CTagsToJSON(map, allocator);
+
+        // Finally putting everything on the document object
+        jsonMarkers.AddMember("markers", *markersObj, allocator);
+    }
     rapidjson::StringBuffer strbuf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
     jsonMarkers.Accept(writer);
@@ -422,7 +457,7 @@ int main(int argc, char** argv)
             ("o, output", "The redis output key where to set output data.", cxxopts::value<std::string>())
             ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
             ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
-            ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<std::string>()) //TODO
+            ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<int>()) //TODO
             ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
             ("camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
             ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")

@@ -190,10 +190,11 @@ static TrackerMultiMarker* createARTKTracker(uint width, uint height) {
     /* Marker detection options */
     tracker->activateAutoThreshold(true);
     tracker->setMarkerMode(ARToolKitPlus::MARKER_ID_BCH);
-    tracker->setBorderWidth(0.125); // BCH markers
+    tracker->setPixelFormat(ARToolKitPlus::PIXEL_FORMAT_LUM);
+    tracker->setBorderWidth(0.125f); // BCH markers
     tracker->setUndistortionMode(ARToolKitPlus::UNDIST_NONE);
     tracker->setImageProcessingMode(ARToolKitPlus::IMAGE_FULL_RES);
-    tracker->setUseDetectLite(true);
+    tracker->setUseDetectLite(false);
 
     return tracker;
 }
@@ -202,7 +203,54 @@ static void detectARTKMarkers(TrackerMultiMarker* tracker, unsigned char* grayIm
     tracker->calc(grayImage);
 }
 
-static rapidjson::Value* ARTKMarkerToJSON(const ARToolKitPlus::ARMarkerInfo& markerInfo, rapidjson::Document::AllocatorType& allocator)
+static float** refineCorners(cv::Mat image, const float vertex[8][2]) {
+    std::vector<cv::Point2f> corners;
+    for (int j = 0; j < 4; j++) {
+        corners.push_back(cv::Point2f(vertex[j][0], vertex[j][1]));
+    }
+
+    int subPixelWindow = 11;
+    float halfSubPixelWindow = subPixelWindow/2;
+    cv::Size subPixelSize = cv::Size(halfSubPixelWindow, halfSubPixelWindow);
+    cv::Size subPixelZeroZone = cv::Size(-1, -1);
+    cv::TermCriteria subPixelTermCriteria = cv::TermCriteria(CV_TERMCRIT_EPS, 100, 0.001);
+
+    int width = image.cols;
+    int height = image.rows;
+
+    float** new_vertex = new float*[4];
+    for(int i = 0 ; i < 4 ; ++i) {
+        new_vertex[i] = new float[2];
+        new_vertex[i][0] = vertex[i][0];
+        new_vertex[i][1] = vertex[i][1];
+    }
+
+    int w = (subPixelWindow/2) + 1;
+    if (vertex[0][0] - w < 0        || vertex[0][0] + w >= width    || vertex[0][1] - w < 0     || vertex[0][1] + w >= height ||
+            vertex[1][0] - w < 0    || vertex[1][0] + w >= width    || vertex[1][1] - w < 0     || vertex[1][1] + w >= height ||
+            vertex[2][0] - w < 0    || vertex[2][0] + w >= width    || vertex[2][1] - w < 0     || vertex[2][1] + w >= height ||
+            vertex[3][0] - w < 0    || vertex[3][0] + w >= width    || vertex[3][1] - w < 0     || vertex[3][1] + w >= height) {
+        // too tight
+        return new_vertex;
+    }
+
+    CvBox2D box = cv::minAreaRect(corners);
+    float bw = box.size.width;
+    float bh = box.size.height;
+    if (bw <= 0 || bh <= 0 || bw/bh < 0.1 || bw/bh > 10) {
+        // marker is too "flat" to have been IDed correctly...
+        return new_vertex;
+    }
+
+    cv::cornerSubPix(image, corners, subPixelSize, subPixelZeroZone, subPixelTermCriteria);
+    for (int i = 0 ; i < 4 ; i++) {
+        new_vertex[i][0] = corners.at(i).x;
+        new_vertex[i][1] = corners.at(i).y;
+    }
+    return new_vertex;
+}
+
+static rapidjson::Value* ARTKMarkerToJSON(cv::Mat image, const ARToolKitPlus::ARMarkerInfo& markerInfo, rapidjson::Document::AllocatorType& allocator)
 {
     rapidjson::Value* markerObj = new rapidjson::Value(rapidjson::kObjectType);
     if (VERBOSE) {
@@ -223,27 +271,29 @@ static rapidjson::Value* ARTKMarkerToJSON(const ARToolKitPlus::ARMarkerInfo& mar
     centerArray.PushBack(markerInfo.pos[1], allocator);
     markerObj->AddMember("center", centerArray, allocator);
 
+    float** vertex = refineCorners(image, markerInfo.vertex);
+
     rapidjson::Value cornerArray (rapidjson::kArrayType);
     // WARNING: corners should be pushed in the following order:
     // top left - top right - bot right - bot left
-    cornerArray.PushBack(markerInfo.vertex[3][0], allocator);
-    cornerArray.PushBack(markerInfo.vertex[3][1], allocator);
+    cornerArray.PushBack(vertex[3][0], allocator);
+    cornerArray.PushBack(vertex[3][1], allocator);
 
-    cornerArray.PushBack(markerInfo.vertex[0][0], allocator);
-    cornerArray.PushBack(markerInfo.vertex[0][1], allocator);
+    cornerArray.PushBack(vertex[0][0], allocator);
+    cornerArray.PushBack(vertex[0][1], allocator);
 
-    cornerArray.PushBack(markerInfo.vertex[1][0], allocator);
-    cornerArray.PushBack(markerInfo.vertex[1][1], allocator);
+    cornerArray.PushBack(vertex[1][0], allocator);
+    cornerArray.PushBack(vertex[1][1], allocator);
 
-    cornerArray.PushBack(markerInfo.vertex[2][0], allocator);
-    cornerArray.PushBack(markerInfo.vertex[2][1], allocator);
+    cornerArray.PushBack(vertex[2][0], allocator);
+    cornerArray.PushBack(vertex[2][1], allocator);
 
     // Filling the marker obj with the corners data
     markerObj->AddMember("corners", cornerArray, allocator);
     return markerObj;
 }
 
-static rapidjson::Value* ARTKMarkersToJSON(TrackerMultiMarker* ARTKTracker, rapidjson::Document::AllocatorType& allocator) {
+static rapidjson::Value* ARTKMarkersToJSON(cv::Mat image, TrackerMultiMarker* ARTKTracker, rapidjson::Document::AllocatorType& allocator) {
     rapidjson::Value* markersObj = new rapidjson::Value(rapidjson::kArrayType);
     int markersCount = ARTKTracker->getNumDetectedMarkers();
     if (VERBOSE) {
@@ -253,7 +303,7 @@ static rapidjson::Value* ARTKMarkersToJSON(TrackerMultiMarker* ARTKTracker, rapi
     for(int i = 0 ; i < markersCount ; i++) {
         auto markerInfo = ARTKTracker->getDetectedMarker(i);
         // Converting markerInfo to rapidjson obj
-        rapidjson::Value* markerObj = ARTKMarkerToJSON(markerInfo, allocator);
+        rapidjson::Value* markerObj = ARTKMarkerToJSON(image, markerInfo, allocator);
 
         // Filling the markers with the generated marker object
         markersObj->PushBack(*markerObj, allocator);
@@ -278,7 +328,6 @@ static rapidjson::Value* CTagToJSON(const std::pair<int, chilitags::Quad>& tag, 
 {
     rapidjson::Value* tagObj = new rapidjson::Value(rapidjson::kObjectType);
     int id = tag.first;
-    //TODO: Compute it.
     int dir = 0;
     tagObj->AddMember("id", id, allocator);
     tagObj->AddMember("dir", dir, allocator);
@@ -335,16 +384,18 @@ void onImagePublished(redisAsyncContext* c, void* rep, void* privdata) {
         }
         return;
     }
-
     unsigned char* grayData = rgb_to_gray(width, height, image->data());
+    cv::Mat opencvImage(width, height, CV_8UC1, grayData);
+
     detectARTKMarkers(ARTKTracker, grayData);
 
     // Creating JSON data structure that will hold markers information.
     rapidjson::Document jsonMarkers;
     jsonMarkers.SetObject();
     rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
+
     // markersObj will be the array holding each individual marker objects.
-    rapidjson::Value* markersObj = ARTKMarkersToJSON(ARTKTracker, allocator);
+    rapidjson::Value* markersObj = ARTKMarkersToJSON(opencvImage, ARTKTracker, allocator);
 
     // Finally putting everything on the document object
     jsonMarkers.AddMember("markers", *markersObj, allocator);
@@ -394,7 +445,7 @@ int main(int argc, char** argv)
     data.height = clientSync.getInt(redisInputCameraParametersKey + ":height");
     data.channels = clientSync.getInt(redisInputCameraParametersKey + ":channels");
     if (data.width == -1 || data.height == -1 || data.channels == -1) {
-        std::cerr << "Could not find camera parameters (width height chanels). Please specify where to find them in redis with the --camera-parameters option parameters." << std::endl;
+        std::cerr << "Could not find camera parameters (width height channels). Please specify where to find them in redis with the --camera-parameters option parameters." << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -421,6 +472,7 @@ int main(int argc, char** argv)
         }
 
         unsigned char* grayData = rgb_to_gray(data.width, data.height, image->data());
+        cv::Mat opencvImage(image->width(), image->height(), CV_8UC1, grayData);
         detectARTKMarkers(data.ARTKTracker, grayData);
 
         // Creating JSON data structure that will hold markers information.
@@ -428,7 +480,7 @@ int main(int argc, char** argv)
         jsonMarkers.SetObject();
         rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
         // markersObj will be the array holding each individual marker objects.
-        rapidjson::Value* markersObj = ARTKMarkersToJSON(data.ARTKTracker, allocator);
+        rapidjson::Value* markersObj = ARTKMarkersToJSON(opencvImage, data.ARTKTracker, allocator);
 
         // Finally putting everything on the document object
         jsonMarkers.AddMember("markers", *markersObj, allocator);

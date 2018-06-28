@@ -36,7 +36,8 @@ std::string redisInputKey = "custom:image";
 std::string redisOutputKey = "custom:image:output";
 std::string redisInputCameraParametersKey = "default:camera:parameters";
 std::string redisHost = "127.0.0.1";
-std::string cameraCalibrationFile = "../data/no_distortion.cal";
+std::string cameraCalibrationFile = "./no_distortion.cal";
+std::string markerboardFile = "./markerboard_480-499.cfg";
 
 int redisPort = 6379;
 int markerType = ARTK;
@@ -87,6 +88,29 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
     else {
         if (VERBOSE) {
             std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraCalibrationFile << std::endl;
+        }
+    }
+
+    if (result.count("markerboard-file")) {
+        std::string fileName = result["markerboard-file"].as<std::string>();
+        if (exists(fileName)) {
+            markerboardFile = fileName;
+            if (VERBOSE) {
+                std::cerr << "Markerboard file specified. Using " << markerboardFile << " as markerboard file." << std::endl;
+            }
+        }
+        else {
+            if (VERBOSE) {
+                std::cerr << "Specified camera file could not be found. Using default " << markerboardFile << " as markerboard file." << std::endl;
+            }
+        }
+    }
+    else {
+        if (exists(markerboardFile) && VERBOSE) {
+            std::cerr << "No markerboard file file specified. Using default markerboard file: " << markerboardFile << std::endl;
+        }
+        else {
+            std::cerr << "Default markerboard file not found. Tracker will not be initiliazed." << std::endl;
         }
     }
 
@@ -181,7 +205,7 @@ static unsigned char* rgb_to_gray(uint width, uint height, unsigned char* rgb)
 static TrackerMultiMarker* createARTKTracker(uint width, uint height) {
     TrackerMultiMarker* tracker = new TrackerMultiMarker(width, height, 20, 6, 6, 6, 20);
     tracker->setPixelFormat(ARToolKitPlus::PIXEL_FORMAT_LUM);
-    bool init = tracker->init(cameraCalibrationFile.c_str(), "../data/markerboard_480-499.cfg", 1.0f, 1000.0f);
+    bool init = tracker->init(cameraCalibrationFile.c_str(), markerboardFile.c_str(), 1.0f, 1000.0f);
     if (!init)
     {
         if (VERBOSE) {
@@ -457,8 +481,9 @@ int main(int argc, char** argv)
             ("o, output", "The redis output key where to set output data.", cxxopts::value<std::string>())
             ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
             ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
-            ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<int>()) //TODO
+            ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<int>())
             ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+            ("markerboard-file", "", cxxopts::value<std::string>())
             ("camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
             ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
             ("h, help", "Print this help message.");
@@ -485,6 +510,9 @@ int main(int argc, char** argv)
     }
 
     TrackerMultiMarker* tracker = createARTKTracker(data.width, data.height);
+    if (tracker == NULL) {
+        return EXIT_FAILURE;
+    }
     data.ARTKTracker = tracker;
     data.clientSync = &clientSync;
 

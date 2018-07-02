@@ -32,6 +32,7 @@ static const int CTAG = 1;
 
 bool VERBOSE = false;
 bool STREAM_MODE = true;
+bool SET_MODE = false;
 std::string redisInputKey = "custom:image";
 std::string redisOutputKey = "custom:image:output";
 std::string redisInputCameraParametersKey = "default:camera:parameters";
@@ -71,8 +72,8 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         std::cerr << "Verbose mode enabled." << std::endl;
     }
 
-    if (result.count("c")) {
-        std::string fileName = result["c"].as<std::string>();
+    if (result.count("camera-calibration")) {
+        std::string fileName = result["camera-calibration"].as<std::string>();
         if (exists(fileName)) {
             cameraCalibrationFile = fileName;
             if (VERBOSE) {
@@ -145,6 +146,14 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         }
     }
 
+    if (result.count("g")) {
+        SET_MODE = true;
+        STREAM_MODE = false;
+        if (VERBOSE) {
+            std::cerr << "Get-Set mode enabled." << std::endl;
+        }
+    }
+
     if (result.count("m")) {
         markerType = result["m"].as<int>();
         if (VERBOSE) {
@@ -179,12 +188,12 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
     if (result.count("camera-parameters")) {
         redisInputCameraParametersKey = result["camera-parameters"].as<std::string>();
         if (VERBOSE) {
-            std::cerr << "Camera parameters output key was set to " << redisInputCameraParametersKey << std::endl;
+            std::cerr << "Camera parameters input key was set to " << redisInputCameraParametersKey << std::endl;
         }
     }
     else {
         if (VERBOSE) {
-            std::cerr << "No camera parameters output key specified. Camera parameters output key was set to " << redisInputCameraParametersKey << std::endl;
+            std::cerr << "No camera parameters intput key specified. Camera parameters input key was set to " << redisInputCameraParametersKey << std::endl;
         }
     }
 
@@ -321,6 +330,10 @@ static rapidjson::Value* ARTKMarkerToJSON(cv::Mat image, const ARToolKitPlus::AR
 
     // Filling the marker obj with the corners data
     markerObj->AddMember("corners", cornerArray, allocator);
+    for (int i = 0 ; i < 4 ; i++) {
+        delete[] vertex[i];
+    }
+    delete[] vertex;
     return markerObj;
 }
 
@@ -448,6 +461,7 @@ void onImagePublished(redisAsyncContext* c, void* rep, void* privdata) {
 
         // Finally putting everything on the document object
         jsonMarkers.AddMember("markers", *markersObj, allocator);
+        delete markersObj;
     }
     else if (markerType == CTAG)
     {
@@ -458,6 +472,8 @@ void onImagePublished(redisAsyncContext* c, void* rep, void* privdata) {
 
         // Finally putting everything on the document object
         jsonMarkers.AddMember("markers", *markersObj, allocator);
+        delete markersObj;
+        delete map;
     }
     rapidjson::StringBuffer strbuf;
     rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
@@ -482,9 +498,10 @@ int main(int argc, char** argv)
             ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
             ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
             ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<int>())
-            ("c, camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+            ("camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
             ("markerboard-file", "", cxxopts::value<std::string>())
-            ("camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
+            ("c, camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
+            ("g, get-mode", "Enable get-set stream mode.")
             ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
             ("h, help", "Print this help message.");
 
@@ -526,37 +543,66 @@ int main(int argc, char** argv)
         clientAsync.subscribe(redisInputKey, onImagePublished, static_cast<void*>(&data));
     }
     else {
-        Image* image = clientSync.getImage(data.width, data.height, data.channels, redisInputKey);
-        if (image == NULL) {
-            if (VERBOSE) {
-                std::cerr << "Could not fetch image data from redis server. Please ensure that the key you provided is correct." << std::endl;
+        int infinite = 1;
+        while (infinite) {
+            Image* image = clientSync.getImage(data.width, data.height, data.channels, redisInputKey);
+            if (image == NULL) {
+                if (VERBOSE) {
+                    std::cerr << "Could not fetch image data from redis server. Please ensure that the key you provided is correct." << std::endl;
+                }
+                return EXIT_FAILURE;
             }
-            return EXIT_FAILURE;
+
+            delete image;
+            unsigned char* grayData = rgb_to_gray(data.width, data.height, image->data());
+
+            // Creating JSON data structure that will hold markers information.
+            rapidjson::Document jsonMarkers;
+            jsonMarkers.SetObject();
+            rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
+
+            if (markerType == ARTK) {
+                cv::Mat opencvImage(data.width, data.height, CV_8UC1, grayData);
+                detectARTKMarkers(tracker, grayData);
+
+                // markersObj will be the array holding each individual marker objects.
+                rapidjson::Value* markersObj = ARTKMarkersToJSON(opencvImage, tracker, allocator);
+
+                // Finally putting everything on the document object
+                jsonMarkers.AddMember("markers", *markersObj, allocator);
+                delete markersObj;
+            }
+            else if (markerType == CTAG)
+            {
+                chilitags::TagCornerMap* map = detectCTags(grayData, data.width, data.height);
+
+                // markersObj will be the array holding each individual marker objects.
+                rapidjson::Value* markersObj = CTagsToJSON(map, allocator);
+
+                // Finally putting everything on the document object
+                jsonMarkers.AddMember("markers", *markersObj, allocator);
+                delete markersObj;
+                delete map;
+            }
+            rapidjson::StringBuffer strbuf;
+            rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
+            jsonMarkers.Accept(writer);
+
+            clientSync.setString((char*)strbuf.GetString(), redisOutputKey);
+            if (VERBOSE) {
+                std::cerr << strbuf.GetString() << std::endl;
+            }
+
+            delete[] grayData;
+            delete image;
+
+            // TODO: Clean this or close your eyes.
+            if (!SET_MODE) {
+                infinite = 0;
+            }
         }
-
-        unsigned char* grayData = rgb_to_gray(data.width, data.height, image->data());
-        cv::Mat opencvImage(image->width(), image->height(), CV_8UC1, grayData);
-        detectARTKMarkers(data.ARTKTracker, grayData);
-
-        // Creating JSON data structure that will hold markers information.
-        rapidjson::Document jsonMarkers;
-        jsonMarkers.SetObject();
-        rapidjson::Document::AllocatorType& allocator = jsonMarkers.GetAllocator();
-        // markersObj will be the array holding each individual marker objects.
-        rapidjson::Value* markersObj = ARTKMarkersToJSON(opencvImage, data.ARTKTracker, allocator);
-
-        // Finally putting everything on the document object
-        jsonMarkers.AddMember("markers", *markersObj, allocator);
-
-        rapidjson::StringBuffer strbuf;
-        rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
-        jsonMarkers.Accept(writer);
-
-        clientSync.setString((char*)strbuf.GetString(), redisOutputKey);
-        if (VERBOSE) {
-            std::cerr << strbuf.GetString() << std::endl;
-        }
-        delete image;
     }
+
+    delete tracker;
     return EXIT_SUCCESS;
 }

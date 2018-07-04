@@ -72,8 +72,8 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         std::cerr << "Verbose mode enabled." << std::endl;
     }
 
-    if (result.count("camera-calibration")) {
-        std::string fileName = result["camera-calibration"].as<std::string>();
+    if (result.count("calibration-file")) {
+        std::string fileName = result["calibration-file"].as<std::string>();
         if (exists(fileName)) {
             cameraCalibrationFile = fileName;
             if (VERBOSE) {
@@ -141,6 +141,7 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
 
     if (result.count("u")) {
         STREAM_MODE = false;
+        SET_MODE = false;
         if (VERBOSE) {
             std::cerr << "Unique mode enabled." << std::endl;
         }
@@ -150,7 +151,7 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         SET_MODE = true;
         STREAM_MODE = false;
         if (VERBOSE) {
-            std::cerr << "Get-Set mode enabled." << std::endl;
+            std::cerr << "Stream get/set mode enabled." << std::endl;
         }
     }
 
@@ -243,7 +244,7 @@ static void detectARTKMarkers(TrackerMultiMarker* tracker, unsigned char* grayIm
     tracker->calc(grayImage);
 }
 
-static float** refineCorners(cv::Mat image, const float vertex[8][2]) {
+static float** refineCorners(const cv::Mat& image, const float vertex[8][2]) {
     std::vector<cv::Point2f> corners;
     for (int j = 0; j < 4; j++) {
         corners.push_back(cv::Point2f(vertex[j][0], vertex[j][1]));
@@ -290,7 +291,7 @@ static float** refineCorners(cv::Mat image, const float vertex[8][2]) {
     return new_vertex;
 }
 
-static rapidjson::Value* ARTKMarkerToJSON(cv::Mat image, const ARToolKitPlus::ARMarkerInfo& markerInfo, rapidjson::Document::AllocatorType& allocator)
+static rapidjson::Value* ARTKMarkerToJSON(const cv::Mat& image, const ARToolKitPlus::ARMarkerInfo& markerInfo, rapidjson::Document::AllocatorType& allocator)
 {
     rapidjson::Value* markerObj = new rapidjson::Value(rapidjson::kObjectType);
     if (VERBOSE) {
@@ -337,7 +338,7 @@ static rapidjson::Value* ARTKMarkerToJSON(cv::Mat image, const ARToolKitPlus::AR
     return markerObj;
 }
 
-static rapidjson::Value* ARTKMarkersToJSON(cv::Mat image, TrackerMultiMarker* ARTKTracker, rapidjson::Document::AllocatorType& allocator) {
+static rapidjson::Value* ARTKMarkersToJSON(const cv::Mat& image, TrackerMultiMarker* ARTKTracker, rapidjson::Document::AllocatorType& allocator) {
     rapidjson::Value* markersObj = new rapidjson::Value(rapidjson::kArrayType);
     int markersCount = ARTKTracker->getNumDetectedMarkers();
     if (VERBOSE) {
@@ -498,10 +499,10 @@ int main(int argc, char** argv)
             ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
             ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
             ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<int>())
-            ("camera-calibration", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
+            ("calibration-file", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
             ("markerboard-file", "", cxxopts::value<std::string>())
             ("c, camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
-            ("g, get-mode", "Enable get-set stream mode.")
+            ("g, stream-get", "Enable stream get/set mode.")
             ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
             ("h, help", "Print this help message.");
 
@@ -543,17 +544,17 @@ int main(int argc, char** argv)
         clientAsync.subscribe(redisInputKey, onImagePublished, static_cast<void*>(&data));
     }
     else {
-        int infinite = 1;
+        bool infinite = true;
         while (infinite) {
             Image* image = clientSync.getImage(data.width, data.height, data.channels, redisInputKey);
             if (image == NULL) {
                 if (VERBOSE) {
                     std::cerr << "Could not fetch image data from redis server. Please ensure that the key you provided is correct." << std::endl;
                 }
+                delete image;
                 return EXIT_FAILURE;
             }
 
-            delete image;
             unsigned char* grayData = rgb_to_gray(data.width, data.height, image->data());
 
             // Creating JSON data structure that will hold markers information.
@@ -598,11 +599,9 @@ int main(int argc, char** argv)
 
             // TODO: Clean this or close your eyes.
             if (!SET_MODE) {
-                infinite = 0;
+                infinite = false;
             }
         }
     }
-
-    delete tracker;
     return EXIT_SUCCESS;
 }

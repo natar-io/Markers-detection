@@ -31,16 +31,20 @@ static const int ARTK = 0;
 static const int CTAG = 1;
 
 bool VERBOSE = false;
-bool STREAM_MODE = true;
+
+bool STREAM_MODE = false;
 bool SET_MODE = false;
+
 std::string redisInputKey = "custom:image";
 std::string redisOutputKey = "custom:image:output";
 std::string redisInputCameraParametersKey = "default:camera:parameters";
+
 std::string redisHost = "127.0.0.1";
+int redisPort = 6379;
+
 std::string cameraCalibrationFile = "./no_distortion.cal";
 std::string markerboardFile = "./markerboard_480-499.cfg";
 
-int redisPort = 6379;
 int markerType = ARTK;
 
 using ARToolKitPlus::TrackerMultiMarker;
@@ -70,49 +74,6 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
     if (result.count("v")) {
         VERBOSE = true;
         std::cerr << "Verbose mode enabled." << std::endl;
-    }
-
-    if (result.count("calibration-file")) {
-        std::string fileName = result["calibration-file"].as<std::string>();
-        if (exists(fileName)) {
-            cameraCalibrationFile = fileName;
-            if (VERBOSE) {
-                std::cerr << "Camera file specified. Using " << cameraCalibrationFile << " as camera calibration file." << std::endl;
-            }
-        }
-        else {
-            if (VERBOSE) {
-                std::cerr << "Specified camera file could not be found. Using default " << cameraCalibrationFile << " as camera calibration file." << std::endl;
-            }
-        }
-    }
-    else {
-        if (VERBOSE) {
-            std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraCalibrationFile << std::endl;
-        }
-    }
-
-    if (result.count("markerboard-file")) {
-        std::string fileName = result["markerboard-file"].as<std::string>();
-        if (exists(fileName)) {
-            markerboardFile = fileName;
-            if (VERBOSE) {
-                std::cerr << "Markerboard file specified. Using " << markerboardFile << " as markerboard file." << std::endl;
-            }
-        }
-        else {
-            if (VERBOSE) {
-                std::cerr << "Specified camera file could not be found. Using default " << markerboardFile << " as markerboard file." << std::endl;
-            }
-        }
-    }
-    else {
-        if (exists(markerboardFile) && VERBOSE) {
-            std::cerr << "No markerboard file file specified. Using default markerboard file: " << markerboardFile << std::endl;
-        }
-        else {
-            std::cerr << "Default markerboard file not found. Tracker will not be initiliazed." << std::endl;
-        }
     }
 
     if (result.count("i")) {
@@ -147,11 +108,17 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         }
     }
 
+    if (result.count("s")) {
+        STREAM_MODE = true;
+        if (VERBOSE) {
+            std::cerr << "PUBLISH stream mode enabled." << std::endl;
+        }
+    }
+
     if (result.count("g")) {
         SET_MODE = true;
-        STREAM_MODE = false;
         if (VERBOSE) {
-            std::cerr << "Stream get/set mode enabled." << std::endl;
+            std::cerr << "GET/SET stream mode enabled." << std::endl;
         }
     }
 
@@ -196,6 +163,58 @@ static int parseCommandLine(cxxopts::Options options, int argc, char** argv)
         if (VERBOSE) {
             std::cerr << "No camera parameters intput key specified. Camera parameters input key was set to " << redisInputCameraParametersKey << std::endl;
         }
+    }
+
+    if (result.count("calibration-file")) {
+        std::string fileName = result["calibration-file"].as<std::string>();
+        if (exists(fileName)) {
+            cameraCalibrationFile = fileName;
+            if (VERBOSE) {
+                std::cerr << "Camera file specified. Using " << cameraCalibrationFile << " as camera calibration file." << std::endl;
+            }
+        }
+        else {
+            if (VERBOSE) {
+                std::cerr << "Specified camera file could not be found. Using default " << cameraCalibrationFile << " as camera calibration file." << std::endl;
+            }
+        }
+    }
+    else {
+        if (VERBOSE) {
+            std::cerr << "No camera configuration file specified. Using default camera configuration file: " << cameraCalibrationFile << std::endl;
+        }
+    }
+
+    if (result.count("markerboard-file")) {
+        std::string fileName = result["markerboard-file"].as<std::string>();
+        if (exists(fileName)) {
+            markerboardFile = fileName;
+            if (VERBOSE) {
+                std::cerr << "Markerboard file specified. Using " << markerboardFile << " as markerboard file." << std::endl;
+            }
+        }
+        else {
+            if (VERBOSE) {
+                std::cerr << "Specified camera file could not be found. Using default " << markerboardFile << " as markerboard file." << std::endl;
+            }
+        }
+    }
+    else {
+        if (exists(markerboardFile) && VERBOSE) {
+            std::cerr << "No markerboard file file specified. Using default markerboard file: " << markerboardFile << std::endl;
+        }
+        else if (VERBOSE){
+            std::cerr << "Default markerboard file not found. Tracker will not be able to be initiliazed." << std::endl;
+            std::cerr << "Exiting ..." << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (!result.count("u") && !result.count("s") && !result.count("g")) {
+        if (VERBOSE) {
+            std::cerr << "You need to specify at least the stream method option with -u, -s or -g" << std::endl;
+        }
+        return EXIT_FAILURE;
     }
 
     return 0;
@@ -481,7 +500,11 @@ void onImagePublished(redisAsyncContext* c, void* rep, void* privdata) {
     jsonMarkers.Accept(writer);
 
     clientSync->publishString((char*)strbuf.GetString(), redisOutputKey);
+    if (SET_MODE) {
+        clientSync->setString((char*)strbuf.GetString(), redisOutputKey);
+    }
     if (VERBOSE) {
+        std::cerr << "PUBLISHED " << (SET_MODE ? "and SET " : "") << "markers detection output to " << redisOutputKey << std::endl;
         std::cerr << strbuf.GetString() << std::endl;
     }
     delete[] grayData;
@@ -496,19 +519,18 @@ int main(int argc, char** argv)
             ("redis-host", "The host adress to which the redis client should try to connect", cxxopts::value<std::string>())
             ("i, input", "The redis input key where data are going to arrive.", cxxopts::value<std::string>())
             ("o, output", "The redis output key where to set output data.", cxxopts::value<std::string>())
-            ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data. By default stream mode is enabled.")
+            ("s, stream", "Activate stream mode. In stream mode the program will constantly process input data and publish output data.")
             ("u, unique", "Activate unique mode. In unique mode the program will only read and output data one time.")
+            ("g, stream-set", "Enable stream get/set mode. If stream mode is already enabled setting this will cause to publish and set the same data at the same time")
             ("m, marker-type", "The type of the marker to use. (0) ARTK ; (1) Chilitags.", cxxopts::value<int>())
             ("calibration-file", "The camera calibration file that will be used to adjust the results depending on the physical camera characteristics.", cxxopts::value<std::string>())
             ("markerboard-file", "", cxxopts::value<std::string>())
             ("c, camera-parameters", "The redis input key where camera-parameters are going to arrive.", cxxopts::value<std::string>())
-            ("g, stream-get", "Enable stream get/set mode.")
             ("v, verbose", "Enable verbose mode. This will print helpfull process informations on the standard error stream.")
             ("h, help", "Print this help message.");
 
     int retCode = parseCommandLine(options, argc, argv);
-    if (retCode)
-    {
+    if (retCode) {
         return EXIT_FAILURE;
     }
 
@@ -523,6 +545,7 @@ int main(int argc, char** argv)
     data.height = clientSync.getInt(redisInputCameraParametersKey + ":height");
     data.channels = clientSync.getInt(redisInputCameraParametersKey + ":channels");
     if (data.width == -1 || data.height == -1 || data.channels == -1) {
+        // TODO: Fix double free or corruption error when camera parameters can not be loaded.
         std::cerr << "Could not find camera parameters (width height channels). Please specify where to find them in redis with the --camera-parameters option parameters." << std::endl;
         return EXIT_FAILURE;
     }
@@ -591,16 +614,16 @@ int main(int argc, char** argv)
 
             clientSync.setString((char*)strbuf.GetString(), redisOutputKey);
             if (VERBOSE) {
+                std::cerr << "SET markers detection output to " << redisOutputKey << std::endl;
                 std::cerr << strbuf.GetString() << std::endl;
+            }
+
+            if (!SET_MODE) {
+                infinite = false;
             }
 
             delete[] grayData;
             delete image;
-
-            // TODO: Clean this or close your eyes.
-            if (!SET_MODE) {
-                infinite = false;
-            }
         }
     }
     return EXIT_SUCCESS;
